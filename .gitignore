@@ -11,3 +11,6 @@ __MACOSX/
 *.jpg
 *.svo
 *.png
+data/
+!docs/images/*
+!docs/videos/*

@@ -36,7 +36,8 @@ def get_norm_stats(data_path):
     # }
     with open(data_path, "rb") as f:
         norm_stats = pickle.load(f)
-    return norm_stats
+    # tv_train may save with numpy 2.x; convert lists/arrays for tv (numpy 1.x)
+    return {k: np.asarray(v, dtype=np.float32) for k, v in norm_stats.items()}
 
 
 def load_policy(policy_path, device):
@@ -44,17 +45,17 @@ def load_policy(policy_path, device):
     return policy
 
 
-def normalize_input(state, left_img, right_img, norm_stats, last_action_data=None):
+def normalize_input(state, left_img, right_img, norm_stats, device, last_action_data=None):
     # import ipdb; ipdb.set_trace()
     # left_img = cv2.resize(left_img, (308, 224))
     # right_img = cv2.resize(right_img, (308, 224))
     image_data = torch.from_numpy(np.stack([left_img, right_img], axis=0)) / 255.0
     qpos_data = (torch.from_numpy(state) - norm_stats["qpos_mean"]) / norm_stats["qpos_std"]
-    image_data = image_data.view((1, 2, 3, 480, 640)).to(device='cuda')
-    qpos_data = qpos_data.view((1, 26)).to(device='cuda')
+    image_data = image_data.view((1, 2, 3, 480, 640)).to(device=device)
+    qpos_data = qpos_data.view((1, 26)).to(device=device)
 
     if last_action_data is not None:
-        last_action_data = torch.from_numpy(last_action_data).to(device='cuda').view((1, -1)).to(torch.float)
+        last_action_data = torch.from_numpy(last_action_data).to(device=device).view((1, -1)).to(torch.float)
         qpos_data = torch.cat((qpos_data, last_action_data), dim=1)
     return (qpos_data, image_data)
 
@@ -75,6 +76,7 @@ if __name__ == '__main__':
     parser.add_argument('--taskid', action='store', type=str, help='task id', required=True)
     parser.add_argument('--exptid', action='store', type=str, help='experiment id', required=True)
     parser.add_argument('--resume_ckpt', action='store', type=str, help='resume checkpoint', required=True)
+    parser.add_argument('--record', action='store_true', help='save sim render + camera views to an mp4 in the exp dir')
     args = vars(parser.parse_args())
 
     episode_name = "processed_episode_0.hdf5"
@@ -89,20 +91,21 @@ if __name__ == '__main__':
     action_dim = 28
 
     chunk_size = 60
-    device = "cuda"
+    # tv env PyTorch cannot use RTX 5060 (sm_120); run policy on CPU
+    device = "cpu"
 
-    data = h5py.File(str(episode_path), 'r')
-    actions = np.array(data['qpos_action'])
-    left_imgs = np.array(data['observation.image.left'])
-    right_imgs = np.array(data['observation.image.right'])
-    states = np.array(data['observation.state'])
-    init_action = np.array(data.attrs['init_action'])
-    data.close()
+    # images (~9GB per episode) stay on disk and are read per frame
+    episode_file = h5py.File(str(episode_path), 'r')
+    actions = np.array(episode_file['qpos_action'])
+    left_imgs = episode_file['observation.image.left']
+    right_imgs = episode_file['observation.image.right']
+    states = np.array(episode_file['observation.state'])
+    init_action = np.array(episode_file.attrs['init_action'])
     timestamps = states.shape[0]
 
     norm_stats = get_norm_stats(norm_stat_path)
     policy = load_policy(policy_path, device)
-    policy.cuda()
+    policy.to(device)
     policy.eval()
 
     history_stack = 0
@@ -113,10 +116,13 @@ if __name__ == '__main__':
     else:
         last_action_queue = None
         last_action_data = None
-    player = Player(dt=1/30)
+    # recordings are 60Hz, so a 60fps video plays back in real time
+    record_path = Path(exp_path) / f"deploy_sim_{args['resume_ckpt']}.mp4" if args['record'] else None
+    player = Player(dt=1/30, record_path=record_path, record_fps=60)
 
     if temporal_agg:
-        all_time_actions = np.zeros([timestamps, timestamps+chunk_size, action_dim])
+        # only the last chunk_size predictions overlap the current step, oldest first
+        recent_chunks = deque(maxlen=chunk_size)
     else:
         num_actions_exe = chunk_size
     
@@ -127,12 +133,14 @@ if __name__ == '__main__':
             if history_stack > 0:
                 last_action_data = np.array(last_action_queue)
 
-            data = normalize_input(states[t], left_imgs[t], right_imgs[t], norm_stats, last_action_data)
+            left_img, right_img = left_imgs[t], right_imgs[t]
+            data = normalize_input(states[t], left_img, right_img, norm_stats, device, last_action_data)
 
             if temporal_agg:
-                output = policy(*data)[0].detach().cpu().numpy() # (1,chuck_size,action_dim)
-                all_time_actions[[t], t:t+chunk_size] = output
-                act = merge_act(all_time_actions[:, t])
+                output = policy(*data)[0].detach().cpu().numpy() # (chunk_size, action_dim)
+                recent_chunks.append(output)
+                n = len(recent_chunks)
+                act = merge_act(np.stack([chunk[n - 1 - i] for i, chunk in enumerate(recent_chunks)]))
             else:
                 if output is None or act_index == num_actions_exe-1:
                     print("Inference...")
@@ -144,7 +152,9 @@ if __name__ == '__main__':
             if history_stack > 0:
                 last_action_queue.append(act)
             act = act * norm_stats["action_std"] + norm_stats["action_mean"]
-            player.step(act, left_imgs[t], right_imgs[t])
+            player.step(act, left_img, right_img)
     except KeyboardInterrupt:
+        pass
+    finally:
         player.end()
-        exit()
+        episode_file.close()

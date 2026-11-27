@@ -98,7 +98,16 @@ class Backbone(BackboneBase):
 class DINOv2BackBone(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.body = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+        # Local checkout of dinov2@b48308a: current hub main uses Python 3.10+
+        # type hints (float | None) which break under TeleVision's Python 3.8.
+        from pathlib import Path
+        dinov2_dir = (Path(__file__).resolve().parents[4] / 'dinov2').resolve()
+        self.body = torch.hub.load(
+            str(dinov2_dir),
+            'dinov2_vits14',
+            source='local',
+            trust_repo=True,
+        )
         self.body.eval()
         self.num_channels = 384
     

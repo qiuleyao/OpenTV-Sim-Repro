@@ -13,11 +13,12 @@ from tqdm import tqdm
 import time
 import yaml
 import torch
+import cv2
 from torchvision.transforms import v2
 from sklearn.decomposition import PCA
 
 class Player:
-    def __init__(self, dt=1/60):
+    def __init__(self, dt=1/60, record_path=None, record_fps=None):
         self.dt = dt
         self.head_mat = None
         self.left_wrist_mat = None
@@ -89,6 +90,20 @@ class Player:
         cam_target = gymapi.Vec3(0, 0, 1)
         self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
+        # offscreen camera framing the upper body, used for video recording
+        self.video_writer = None
+        if record_path is not None:
+            cam_props = gymapi.CameraProperties()
+            cam_props.width = 640
+            cam_props.height = 480
+            self.cam_handle = self.gym.create_camera_sensor(self.env, cam_props)
+            self.gym.set_camera_location(self.cam_handle, self.env,
+                                         gymapi.Vec3(0.4, 0.5, 1.8), gymapi.Vec3(-0.8, 0, 1.3))
+            Path(record_path).parent.mkdir(parents=True, exist_ok=True)
+            fps = record_fps if record_fps is not None else 1 / dt
+            self.video_writer = cv2.VideoWriter(str(record_path), cv2.VideoWriter_fourcc(*'mp4v'), fps, (640 * 3, 480))
+            print(f"Recording video to {record_path} at {fps:.0f} fps")
+
         plt.figure(figsize=(12, 6))
         plt.ion()
 
@@ -111,10 +126,20 @@ class Player:
         plt.imshow(img, aspect='equal')
         plt.pause(0.001)
 
+        if self.video_writer is not None:
+            self.gym.render_all_camera_sensors(self.sim)
+            sim_img = self.gym.get_camera_image(self.sim, self.env, self.cam_handle, gymapi.IMAGE_COLOR)
+            sim_img = sim_img.reshape(480, 640, 4)[:, :, :3]
+            frame = np.concatenate((sim_img, img), axis=1)
+            self.video_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
         self.gym.draw_viewer(self.viewer, self.sim, True)
         self.gym.sync_frame_time(self.sim)
 
     def end(self):
+        if self.video_writer is not None:
+            self.video_writer.release()
+            self.video_writer = None
         self.gym.destroy_viewer(self.viewer)
         self.gym.destroy_sim(self.sim)
         plt.close()

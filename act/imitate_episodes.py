@@ -121,8 +121,10 @@ def main(args):
     if not os.path.isdir(ckpt_dir):
         os.makedirs(ckpt_dir)
     stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
+    # Save as plain lists so tv (numpy 1.x / py3.8) can unpickle
+    compat_stats = {k: np.asarray(v).tolist() for k, v in stats.items()}
     with open(stats_path, 'wb') as f:
-        pickle.dump(stats, f)
+        pickle.dump(compat_stats, f, protocol=4)
 
     if args['save_jit']:
         save_jit(config)
@@ -301,7 +303,7 @@ def load_ckpt(policy, exp_dir, ckpt_name):
     print("*"*20)
     print(f"Resuming from {resume_path}")
     print("*"*20)
-    policy.load_state_dict(torch.load(resume_path))
+    policy.load_state_dict(torch.load(resume_path, map_location='cpu'))
     return policy, ckpt_name, epoch
 
 def save_jit(config):
@@ -311,14 +313,17 @@ def save_jit(config):
 
     exp_dir, exp_name = parse_id((LOG_DIR / config['task_name']).resolve(), config['exptid'])
 
+    # Export on CPU so deploy_sim can run in tv (old PyTorch / no sm_120)
+    device = 'cpu'
     policy = make_policy(policy_class, policy_config)
-    policy.cuda()
+    policy.to(device)
     
     policy, ckpt_name, epoch = load_ckpt(policy, exp_dir, config['resume_ckpt'])
+    policy.to(device)
 
     policy.eval()
-    image_data = torch.rand((1, 2, 3, 480, 640), device='cuda')
-    qpos_data = torch.rand((1, config['state_dim']), device='cuda')
+    image_data = torch.rand((1, 2, 3, 480, 640), device=device)
+    qpos_data = torch.rand((1, config['state_dim']), device=device)
     input_data = (qpos_data, image_data)
 
     traced_policy = torch.jit.trace(policy, input_data)
@@ -326,7 +331,7 @@ def save_jit(config):
     traced_policy.save(save_path)
     print("Saved traced actor at ", save_path)
 
-    new_policy = torch.jit.load(save_path)
+    new_policy = torch.jit.load(save_path, map_location=device)
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
