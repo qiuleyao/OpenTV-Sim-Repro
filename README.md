@@ -1,4 +1,14 @@
-# OpenTV-Sim-Repro：Open-TeleVision 仿真复现（RTX 50 系列适配）
+<h1 align="center">🤖 OpenTV-Sim-Repro</h1>
+
+<p align="center">
+  <strong>Open-TeleVision 仿真复现 · RTX 50 系列（sm_120）适配</strong>
+</p>
+
+<p align="center">
+  <a href="docs/reproduction-guide.md">复现记录</a> ·
+  <a href="https://github.com/OpenTeleVision/TeleVision">原项目</a> ·
+  <a href="https://arxiv.org/abs/2407.01512">原论文</a>
+</p>
 
 > **声明：本仓库不是官方仓库。** 本仓库基于 [OpenTeleVision/TeleVision](https://github.com/OpenTeleVision/TeleVision)（CoRL 2024）修改，用于在 RTX 50 系列显卡（Blackwell / sm_120）上复现仿真侧的模仿学习流程。原始代码、模型设计和数据集的全部功劳归原作者所有。使用本仓库时，请引用原论文（见文末[引用](#引用)）。
 >
